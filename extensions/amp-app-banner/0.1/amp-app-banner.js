@@ -22,7 +22,6 @@ import {CSS} from '../../../build/amp-app-banner-0.1.css';
 import {documentInfoForDoc} from '../../../src/document-info';
 import {xhrFor} from '../../../src/xhr';
 import {assertHttpsUrl} from '../../../src/url';
-import {isExperimentOn} from '../../../src/experiments';
 import {removeElement, openWindowDialog} from '../../../src/dom';
 import {storageForDoc} from '../../../src/storage';
 import {timerFor} from '../../../src/timer';
@@ -90,6 +89,9 @@ export class AbstractAppBanner extends AMP.BaseElement {
    * @protected
    */
   addDismissButton_() {
+    const paddingBar = this.win.document.createElement(
+        'i-amp-app-banner-top-padding');
+    this.element.appendChild(paddingBar);
     const dismissButton = this.win.document.createElement('button');
     dismissButton.classList.add('amp-app-banner-dismiss-button');
     dismissButton.setAttribute('aria-label',
@@ -179,18 +181,10 @@ export class AmpAppBanner extends AbstractAppBanner {
   /** @param {!AmpElement} element */
   constructor(element) {
     super(element);
-
-    /** @private {boolean} */
-    this.isExperimentOn_ = false;
   }
 
   /** @override */
   upgradeCallback() {
-    this.isExperimentOn_ = isExperimentOn(this.win, TAG);
-    if (!this.isExperimentOn_) {
-      return null;
-    }
-
     const platform = platformFor(this.win);
     if (platform.isIos()) {
       return new AmpIosAppBanner(this.element);
@@ -202,12 +196,7 @@ export class AmpAppBanner extends AbstractAppBanner {
 
   /** @override */
   layoutCallback() {
-    if (!this.isExperimentOn_) {
-      user().warn(TAG, `Experiment ${TAG} disabled`);
-      return Promise.resolve();
-    }
-
-    dev().info(TAG, 'Only iOS or Android platforms are currently supported.');
+    user().info(TAG, 'Only iOS or Android platforms are currently supported.');
     return this.hide_();
   }
 }
@@ -251,7 +240,7 @@ export class AmpIosAppBanner extends AbstractAppBanner {
     const viewer = viewerForDoc(this.getAmpDoc());
     this.canShowBuiltinBanner_ = !viewer.isEmbedded() && platform.isSafari();
     if (this.canShowBuiltinBanner_) {
-      dev().info(TAG,
+      user().info(TAG,
           'Browser supports builtin banners. Not rendering amp-app-banner.');
       this.hide_();
       return;
@@ -350,7 +339,7 @@ export class AmpAndroidAppBanner extends AbstractAppBanner {
 
     const viewer = viewerForDoc(this.getAmpDoc());
     this.manifestLink_ = this.win.document.head.querySelector(
-        'link[rel=manifest],link[rel=amp-manifest]');
+        'link[rel=manifest],link[rel=origin-manifest]');
 
     const platform = platformFor(this.win);
     // We want to fallback to browser builtin mechanism when possible.
@@ -359,7 +348,7 @@ export class AmpAndroidAppBanner extends AbstractAppBanner {
         !viewer.isEmbedded() && isChromeAndroid;
 
     if (this.canShowBuiltinBanner_) {
-      dev().info(TAG,
+      user().info(TAG,
           'Browser supports builtin banners. Not rendering amp-app-banner.');
       this.hide_();
       return;
@@ -407,23 +396,25 @@ export class AmpAndroidAppBanner extends AbstractAppBanner {
   parseManifest_(manifestJson) {
     const apps = manifestJson['related_applications'];
     if (!apps) {
-      dev().warn(TAG,
+      user().warn(TAG,
           'related_applications is missing from manifest.json file: %s',
           this.element);
       return;
     }
 
-    const app = apps.find(app => app['platform'] == 'play');
-    if (!app) {
-      dev().warn(TAG, 'Could not find a platform=play app in manifest: %s',
-          this.element);
-      return;
+    for (let i = 0; i < apps.length; i++) {
+      const app = apps[i];
+      if (app['platform'] == 'play') {
+        const installAppUrl = `https://play.google.com/store/apps/details` +
+            `?id=${app['id']}`;
+        const openInAppUrl = this.getAndroidIntentForUrl_(app['id']);
+        this.setupOpenButton_(this.openButton_, openInAppUrl, installAppUrl);
+        return;
+      }
     }
 
-    const installAppUrl = (
-        `https://play.google.com/store/apps/details?id=${app['id']}`);
-    const openInAppUrl = this.getAndroidIntentForUrl_(app['id']);
-    this.setupOpenButton_(this.openButton_, openInAppUrl, installAppUrl);
+    user().warn(TAG, 'Could not find a platform=play app in manifest: %s',
+      this.element);
   }
 
   /** @private */

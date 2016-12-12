@@ -16,7 +16,6 @@
 
 import '../../third_party/babel/custom-babel-helpers';
 import {urls} from '../config';
-import {endsWith, startsWith} from '../string';
 
 /**
  * An AMP Release version, not to be confused with an RTV version
@@ -49,6 +48,63 @@ const BLACKLIST = self.AMP_CONFIG[`${TAG}-blacklist`] || [];
 const BASE_RTV_VERSION = self.AMP_CONFIG.v;
 
 /**
+ * Our cache of CDN JS files.
+ *
+ * @type {!Cache}
+ */
+let cache;
+
+/**
+ * A mapping from a Client's (unique per tab _and_ refresh) ID to the AMP
+ * release version we are serving it.
+ *
+ * @type {!Object<string, !Promise<RtvVersion>>}
+ */
+const clientsVersion = Object.create(null);
+
+/**
+ * A mapping from a client's referrer into the time that referrer last made a
+ * request. This is used as a fallback to a clientId for Foreign Fetch, since
+ * it does not provide a unique clientId.
+ *
+ * This object will hopefully not grow too large. When the SW is terminated,
+ * it'll use a brand new object on restart.
+ *
+ * @type {!Object<string, number>}
+ */
+const referrersLastRequestTime = Object.create(null);
+
+
+/**
+ * A regex that matches every CDN JS URL we care to cache.
+ * The "experiments" JS is explicitly disallowed.
+ *
+ * The RTV will be the first capture group, if it is present.
+ * The pathname will be the second capture group.
+ *
+ * Matched URLS include:
+ *  - https://cdn.ampproject.org/v0.js
+ *  - https://cdn.ampproject.org/v0/amp-comp.js
+ *  - https://cdn.ampproject.org/rtv/123456789012345/v0.js
+ *  - https://cdn.ampproject.org/rtv/123456789012345/v0/amp-comp.js
+ *
+ * Unmatched URLS include:
+ *  - https://cdn.ampproject.org/v0/experiments.js
+ */
+const CDN_JS_REGEX = new RegExp(
+    // Require the CDN URL origin at the beginning.
+    `^${urls.cdn.replace(/\./g, '\\.')}` +
+    // Allow, but don't require, RTV.
+    `(?:/rtv/(\\d{2}\\d{13,}))?` +
+    // Require text "/v0"
+    `(/v0` +
+      // Allow, but don't require, an extension under the v0 directory.
+      // We explicitly forbid the `experiments` "extension".
+      `(?:/(?!experiments).+)?` +
+    // Require text ".js" at the end.
+    `\\.js)$`);
+
+/**
  * Returns the version of a given versioned JS file.
  *
  * @param {string} url
@@ -57,19 +113,20 @@ const BASE_RTV_VERSION = self.AMP_CONFIG.v;
  */
 export function rtvVersion(url) {
   // RTVs are 2 digit prefixes followed by the timestamp of the release.
-  const matches = /rtv\/(\d{2}\d{13,})/.exec(url);
-  return matches ? matches[1] : '';
+  const match = CDN_JS_REGEX.exec(url);
+  return (match && match[1]) || '';
 }
 
 /**
- * Returns the basename (AKA the filename) of a url, used to key a url (since
+ * Returns the pathname of a url, used to key a url (since
  * our JS filenames are unique).
  *
  * @param {string} url
  * @return {string}
  */
-function basename(url) {
-  return url.substr(url.lastIndexOf('/') + 1);
+function pathname(url) {
+  const match = CDN_JS_REGEX.exec(url);
+  return match ? match[2] : '';
 }
 
 /**
@@ -115,10 +172,7 @@ function normalizedRequest(request, version) {
  * @visibleForTesting
  */
 export function isCdnJsFile(url) {
-  return endsWith(url, '.js') && (
-    startsWith(url, `${urls.cdn}/rtv`) ||
-    startsWith(url, `${urls.cdn}/v0`)
-  );
+  return CDN_JS_REGEX.test(url);
 }
 
 /**
@@ -137,19 +191,27 @@ export function isBlacklisted(version) {
 }
 
 /**
- * A mapping from a Client's (unique per tab _and_ refresh) ID to the AMP
- * release version we are serving it.
+ * Generates a clientId for Foreign Fetchs, since one is not provided.
  *
- * @type {!Object<string, RtvVersion>}
+ * The current strategy is to batch all requests from referrer that happen
+ * within 60 seconds (of the first request) into one clientId.
+ *
+ * @param {string} referrer
+ * @return {string}
+ * @visibleForTesting
  */
-const clientsMap = Object.create(null);
+export function generateFallbackClientId(referrer) {
+  const now = Date.now();
+  let lastRequestTime = referrersLastRequestTime[referrer] || 0;
 
-/**
- * Our cache of CDN JS files.
- *
- * @type {!Cache}
- */
-let cache;
+  // If last request was more than 60 seconds ago, we are now in a new
+  // "clientId".
+  if (lastRequestTime < now - (60 * 1000)) {
+    lastRequestTime = referrersLastRequestTime[referrer] = now;
+  }
+
+  return referrer + lastRequestTime;
+}
 
 /**
  * A promise to open up our CDN JS cache, which will be resolved before any
@@ -167,12 +229,12 @@ const cachePromise = self.caches.open('cdn-js').then(result => {
  *
  * @param {!Cache} cache
  * @param {!Request} request
- * @param {string} requestFile the basename of the request
+ * @param {string} requestPath the pathname of the request
  * @param {RtvVersion} requestVersion the version of the request
  * @return {!Promise<!Response>}
  * @visibleForTesting
  */
-export function fetchAndCache(cache, request, requestFile, requestVersion) {
+export function fetchAndCache(cache, request, requestPath, requestVersion) {
   // TODO(jridgewell): we should also fetch this requestVersion for all files
   // we know about.
   return fetch(request).then(response => {
@@ -189,7 +251,7 @@ export function fetchAndCache(cache, request, requestFile, requestVersion) {
         for (let i = 0; i < requests.length; i++) {
           const request = requests[i];
           const url = request.url;
-          if (requestFile !== basename(url)) {
+          if (requestPath !== pathname(url)) {
             continue;
           }
           if (requestVersion === rtvVersion(url)) {
@@ -205,30 +267,64 @@ export function fetchAndCache(cache, request, requestFile, requestVersion) {
   });
 }
 
-
 /**
- * Gets the version we have cached for this file. It's either:
- *  - The requestVersion, meaning we have this explicit version cached.
- *  - Some older version
- *  - An empty string, meaning we have nothing cached for this file.
+ * Gets the version we want to serve for this client. We attempt to serve the
+ * version with the most cached files, with a additional weight given to the
+ * main binary and the first requested file.
  *
  * @param {!Cache} cache
- * @param {string} requestFile
+ * @param {string} requestPath
+ * @param {RtvVersion} requestVersion
  * @return {!Promise<RtvVersion>}
  * @visibleForTesting
  */
-export function getCachedVersion(cache, requestFile) {
-  // TODO(jridgewell): We should make this a bit smarter, so that it selects
-  // the version that has a lot of matches, not just this request file.
+export function getCachedVersion(cache, requestPath, requestVersion) {
   return cache.keys().then(requests => {
+    // TODO(jridgewell): This should really count the bytes of the response,
+    // but there's no efficient way to do that.
+    const counts = {};
+    let most = requestVersion;
+    let mostCount = 0;
+
+    // Generates a weighted maximum version, ie the version with the most
+    // cached files. Given every file we've cached, determine what version
+    // it is, and increment the number of files we have for that version.
     for (let i = 0; i < requests.length; i++) {
       const url = requests[i].url;
-      if (requestFile === basename(url)) {
-        return rtvVersion(url);
+      const path = pathname(url);
+      const version = rtvVersion(url);
+
+      // We do not want to stale serve blacklisted files. If nothing else is
+      // cached, we will end up serving whatever version is requested.
+      if (isBlacklisted(version)) {
+        continue;
+      }
+
+      let count = counts[version] || 0;
+
+      // Incrementing the number of "files" that have this version with a
+      // weight.
+      // The main binary (arguably the most important file to cache) is given a
+      // heavy weight, while the first requested file is given a slight weight.
+      // Everything else increments normally.
+      if (path.indexOf('/', 1) === -1) {
+        // Main binary
+        count += 5;
+      } else if (requestPath === path) {
+        // Give a little precedence to the requested file
+        count += 2;
+      } else {
+        count++;
+      }
+
+      counts[version] = count;
+      if (count > mostCount) {
+        most = version;
+        mostCount = count;
       }
     }
 
-    return '';
+    return most;
   });
 }
 
@@ -256,7 +352,7 @@ export function handleFetch(request, maybeClientId) {
   // Closure Compiler!
   const clientId = /** @type {string} */(maybeClientId);
 
-  const requestFile = basename(url);
+  const requestPath = pathname(url);
   const requestVersion = rtvVersion(url) || BASE_RTV_VERSION;
   // Rewrite unversioned requests to the versioned RTV URL. This is a noop if
   // it's already versioned.
@@ -267,30 +363,13 @@ export function handleFetch(request, maybeClientId) {
   return cachePromise.then(() => {
     // If we already registered this client, we must always use the same
     // version.
-    if (clientsMap[clientId]) {
-      return clientsMap[clientId];
+    if (clientsVersion[clientId]) {
+      return clientsVersion[clientId];
     }
 
-    // If not, do we have this version cached?
-    return getCachedVersion(cache, requestFile).then(version => {
-      // We have a cached version! Serve it up!
-      if (version && !isBlacklisted(version)) {
-        return version;
-      }
-
-      // Tears! We have nothing cached, so we'll have to make a request.
-      return requestVersion;
-    }).then(version => {
-      // Determining the version to serve is racey, since there are parallel
-      // requests coming in for all the CDN JS files. If one of them "won"
-      // the race, respect the winner.
-      if (clientsMap[clientId]) {
-        return clientsMap[clientId];
-      }
-
-      clientsMap[clientId] = version;
-      return version;
-    });
+    // If not, let's find the version to serve up.
+    return clientsVersion[clientId] = getCachedVersion(cache, requestPath,
+        requestVersion);
   }).then(version => {
     const versionedRequest = normalizedRequest(request, version);
 
@@ -301,17 +380,18 @@ export function handleFetch(request, maybeClientId) {
         // they requested this exact version; If we served an old version,
         // let's get the new one.
         if (version !== requestVersion && requestVersion == BASE_RTV_VERSION) {
-          fetchAndCache(cache, request, requestFile, requestVersion);
+          fetchAndCache(cache, request, requestPath, requestVersion);
         }
 
         return response;
       }
 
       // If not, let's fetch and cache the request.
-      return fetchAndCache(cache, versionedRequest, requestFile, version);
+      return fetchAndCache(cache, versionedRequest, requestPath, version);
     });
   });
 }
+
 
 self.addEventListener('install', install => {
   install.waitUntil(cachePromise);
@@ -340,7 +420,8 @@ self.addEventListener('fetch', event => {
 // Setup the Foreign Fetch listener, for when the client is on a Publisher
 // origin.
 self.addEventListener('foreignfetch', event => {
-  const response = handleFetch(event.request, event.clientId);
+  const response = handleFetch(event.request,
+      (event.clientId || generateFallbackClientId(event.request.referrer)));
 
   // We only get a response promise back if it's a request we care to cache.
   if (!response) {

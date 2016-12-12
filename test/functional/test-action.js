@@ -16,6 +16,7 @@
 
 import {ActionService, parseActionMap} from '../../src/service/action-impl';
 import {AmpDocSingle} from '../../src/service/ampdoc-impl';
+import {setParentWindow} from '../../src/service';
 import * as sinon from 'sinon';
 
 
@@ -252,14 +253,51 @@ describe('Action parseActionMap', () => {
 });
 
 
-describe('Action findAction', () => {
+describes.sandboxed('Action adoptEmbedWindow', {}, () => {
+  let win;
+  let action;
+  let embedWin;
 
+  beforeEach(() => {
+    win = {
+      document: {body: {}},
+      services: {
+        vsync: {obj: {}},
+      },
+    };
+    action = new ActionService(new AmpDocSingle(win), document);
+    embedWin = {
+      frameElement: document.createElement('div'),
+      document: document.implementation.createHTMLDocument(''),
+    };
+    setParentWindow(embedWin, win);
+  });
+
+  it('should create embedded action service', () => {
+    action.adoptEmbedWindow(embedWin);
+    const embedService = embedWin.services.action
+        && embedWin.services.action.obj;
+    expect(embedService).to.exist;
+    expect(embedService.ampdoc).to.equal(action.ampdoc);
+    expect(embedService.root_).to.equal(embedWin.document);
+  });
+});
+
+
+describe('Action findAction', () => {
   let sandbox;
+  let win;
   let action;
 
   beforeEach(() => {
     sandbox = sinon.sandbox.create();
-    action = new ActionService(new AmpDocSingle(window));
+    win = {
+      document: {body: {}},
+      services: {
+        vsync: {obj: {}},
+      },
+    };
+    action = new ActionService(new AmpDocSingle(win), document);
   });
 
   afterEach(() => {
@@ -313,15 +351,21 @@ describe('Action findAction', () => {
 
 
 describe('Action method', () => {
-
   let sandbox;
+  let win;
   let action;
   let onEnqueue;
   let targetElement, parent, child, execElement;
 
   beforeEach(() => {
     sandbox = sinon.sandbox.create();
-    action = new ActionService(new AmpDocSingle(window));
+    win = {
+      document: {body: {}},
+      services: {
+        vsync: {obj: {}},
+      },
+    };
+    action = new ActionService(new AmpDocSingle(win), document);
     onEnqueue = sandbox.spy();
     targetElement = document.createElement('target');
     const id = ('E' + Math.random()).replace('.', '');
@@ -368,12 +412,27 @@ describe('Action method', () => {
     expect(inv.args['key1']).to.equal(11);
   });
 
-  it('should not allow invoke on non-AMP element', () => {
+  it('should not allow invoke on non-AMP and non-whitelisted element', () => {
     expect(() => {
       action.invoke_({tagName: 'img'}, 'method1', /* args */ null,
           'source1', 'event1');
-    }).to.throw(/Target must be an AMP element/);
+    }).to.throw(/Target element does not support provided action/);
     expect(onEnqueue.callCount).to.equal(0);
+  });
+
+  it('should invoke on non-AMP but whitelisted element', () => {
+    const handlerSpy = sandbox.spy();
+    const target = {tagName: 'form'};
+    action.installActionHandler(target, handlerSpy);
+    action.invoke_(target, 'submit', /* args */ null,
+        'button', 'tap');
+    expect(handlerSpy).to.be.calledOnce;
+    const callArgs = handlerSpy.getCall(0).args[0];
+    expect(callArgs.target).to.be.equal(target);
+    expect(callArgs.method).to.be.equal('submit');
+    expect(callArgs.args).to.be.equal(null);
+    expect(callArgs.source).to.be.equal('button');
+    expect(callArgs.event).to.be.equal('tap');
   });
 
   it('should not allow invoke on unresolved AMP element', () => {
@@ -406,8 +465,8 @@ describe('Action method', () => {
 
 
 describe('Action interceptor', () => {
-
   let sandbox;
+  let win;
   let clock;
   let action;
   let target;
@@ -415,7 +474,13 @@ describe('Action interceptor', () => {
   beforeEach(() => {
     sandbox = sinon.sandbox.create();
     clock = sandbox.useFakeTimers();
-    action = new ActionService(new AmpDocSingle(window));
+    win = {
+      document: {body: {}},
+      services: {
+        vsync: {obj: {}},
+      },
+    };
+    action = new ActionService(new AmpDocSingle(win), document);
     target = document.createElement('target');
     target.setAttribute('id', 'amp-test-1');
   });
@@ -494,14 +559,20 @@ describe('Action interceptor', () => {
 
 
 describe('Action common handler', () => {
-
   let sandbox;
+  let win;
   let action;
   let target;
 
   beforeEach(() => {
     sandbox = sinon.sandbox.create();
-    action = new ActionService(new AmpDocSingle(window));
+    win = {
+      document: {body: {}},
+      services: {
+        vsync: {obj: {}},
+      },
+    };
+    action = new ActionService(new AmpDocSingle(win), document);
     target = document.createElement('target');
     target.setAttribute('id', 'amp-test-1');
 
@@ -527,5 +598,61 @@ describe('Action common handler', () => {
     expect(action1.callCount).to.equal(1);
 
     expect(target['__AMP_ACTION_QUEUE__']).to.not.exist;
+  });
+});
+
+
+describe('Core events', () => {
+  let sandbox;
+  let win;
+  let action;
+  let target;
+
+  beforeEach(() => {
+    sandbox = sinon.sandbox.create();
+    sandbox.stub(window.document, 'addEventListener');
+    win = {
+      document: {body: {}},
+      services: {
+        vsync: {obj: {}},
+      },
+    };
+    action = new ActionService(new AmpDocSingle(win), document);
+    sandbox.stub(action, 'trigger');
+    target = document.createElement('target');
+    target.setAttribute('id', 'amp-test-1');
+
+    action.vsync_ = {mutate: callback => callback()};
+  });
+
+  afterEach(() => {
+    sandbox.restore();
+  });
+
+  it('should trigger tap event', () => {
+    expect(window.document.addEventListener).to.have.been.calledWith('click');
+    const handler = window.document.addEventListener.getCall(0).args[1];
+    const element = {tagName: 'target1', nodeType: 1};
+    const event = {target: element};
+    handler(event);
+    expect(action.trigger).to.have.been.calledWith(element, 'tap', event);
+  });
+
+  it('should trigger submit event', () => {
+    expect(window.document.addEventListener).to.have.been.calledWith('submit');
+    const handler = window.document.addEventListener.getCall(1).args[1];
+    const element = {tagName: 'target1', nodeType: 1};
+    const event = {target: element};
+    handler(event);
+    expect(action.trigger).to.have.been.calledWith(element, 'submit', event);
+  });
+
+  it('should trigger change event', () => {
+    expect(window.document.addEventListener).to.have.been.calledWith('change');
+    const handler = window.document.addEventListener.getCall(2).args[1];
+    const element = {tagName: 'target2', nodeType: 1};
+    const event = {target: element};
+    handler(event);
+    expect(action.trigger).to.have.been.calledWith(element, 'change', event);
   });
 });

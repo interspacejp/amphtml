@@ -21,7 +21,6 @@ import {removeElement} from '../../../src/dom';
 import {toggle} from '../../../src/style';
 import {listenOnce} from '../../../src/event-helper';
 
-
 class AmpStickyAd extends AMP.BaseElement {
   /** @param {!AmpElement} element */
   constructor(element) {
@@ -151,7 +150,7 @@ class AmpStickyAd extends AMP.BaseElement {
     if (this.ad_.isBuilt()) {
       this.layoutAd_();
     } else {
-      listenOnce(this.ad_, 'amp:built', () => {
+      listenOnce(dev().assertElement(this.ad_), 'amp:built', () => {
         this.layoutAd_();
       });
     }
@@ -164,7 +163,7 @@ class AmpStickyAd extends AMP.BaseElement {
   layoutAd_() {
     this.updateInViewport(dev().assertElement(this.ad_), true);
     this.scheduleLayout(dev().assertElement(this.ad_));
-    listenOnce(this.ad_, 'amp:load:end', () => {
+    listenOnce(dev().assertElement(this.ad_), 'amp:load:end', () => {
       this.vsync_.mutate(() => {
         // Set sticky-ad to visible and change container style
         this.element.setAttribute('visible', '');
@@ -203,4 +202,6 @@ class AmpStickyAd extends AMP.BaseElement {
   }
 }
 
-AMP.registerElement('amp-sticky-ad', AmpStickyAd, CSS);
+AMP.extension('amp-sticky-ad', '0.1', AMP => {
+  AMP.registerElement('amp-sticky-ad', AmpStickyAd, CSS);
+});

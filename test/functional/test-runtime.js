@@ -15,8 +15,9 @@
  */
 
 import {AmpDocShadow, AmpDocSingle} from '../../src/service/ampdoc-impl';
+import {ElementStub} from '../../src/element-stub';
 import {Observable} from '../../src/observable';
-import {adopt, adoptShadowMode} from '../../src/runtime';
+import {adopt, adoptShadowMode, installAmpdocServices} from '../../src/runtime';
 import {deactivateChunking} from '../../src/chunk';
 import {
   getServiceForDoc,
@@ -24,7 +25,7 @@ import {
   getServicePromiseOrNullForDoc,
 } from '../../src/service';
 import {installPlatformService} from '../../src/service/platform-impl';
-import {parseUrl} from '../../src/url';
+import {installTimerService} from '../../src/service/timer-impl';
 import {platformFor} from '../../src/platform';
 import {runChunksForTesting} from '../../src/chunk';
 import {timerFor} from '../../src/timer';
@@ -35,38 +36,30 @@ import * as shadowembed from '../../src/shadow-embed';
 import * as dom from '../../src/dom';
 import * as sinon from 'sinon';
 
-describes.sandboxed('runtime', {}, env => {
-
+describes.fakeWin('runtime', {
+  location: 'https://cdn.ampproject.org/c/s/www.example.com/path',
+}, env => {
   let win;
-  let sandbox;
   let ampdocService;
   let ampdocServiceMock;
 
   beforeEach(() => {
-    sandbox = env.sandbox;
+    win = env.win;
     ampdocService = {
       isSingleDoc: () => true,
       getAmpDoc: () => null,
       installShadowDoc_: () => null,
     };
     ampdocServiceMock = sandbox.mock(ampdocService);
-    win = {
-      localStorage: {},
-      AMP: [],
-      location: parseUrl('https://cdn.ampproject.org/c/s/www.example.com/path'),
-      addEventListener: () => {},
-      document: window.document,
-      history: {},
-      navigator: {},
-      setTimeout: () => {},
-      Object,
-      HTMLElement,
-      services: {
-        ampdoc: {obj: ampdocService},
-      },
+    win.AMP = [];
+    win.services = {
+      ampdoc: {obj: ampdocService},
     };
-    ampdocService.getAmpDoc = () => new AmpDocSingle(win);
+    const ampdoc = new AmpDocSingle(win);
+    ampdocService.getAmpDoc = () => ampdoc;
     installPlatformService(win);
+    installTimerService(win);
+    installAmpdocServices(ampdoc);
   });
 
   afterEach(() => {
@@ -85,6 +78,24 @@ describes.sandboxed('runtime', {}, env => {
     adoptShadowMode(win);
     expect(win.AMP.push).to.not.equal([].push);
     expect(win.AMP_TAG).to.be.true;
+  });
+
+  it('should install legacy stubs in single-doc', () => {
+    const initial = win.ampExtendedElements || {};
+    expect(initial['amp-ad']).to.be.undefined;
+    expect(initial['amp-embed']).to.be.undefined;
+    adopt(win);
+    expect(win.ampExtendedElements['amp-ad']).to.equal(ElementStub);
+    expect(win.ampExtendedElements['amp-embed']).to.equal(ElementStub);
+  });
+
+  it('should install legacy stubs in shadow-doc', () => {
+    const initial = win.ampExtendedElements || {};
+    expect(initial['amp-ad']).to.be.undefined;
+    expect(initial['amp-embed']).to.be.undefined;
+    adoptShadowMode(win);
+    expect(win.ampExtendedElements['amp-ad']).to.equal(ElementStub);
+    expect(win.ampExtendedElements['amp-embed']).to.equal(ElementStub);
   });
 
   it('should NOT set cursor:pointer on document element on non-IOS', () => {
@@ -566,16 +577,17 @@ describes.realWin('runtime multidoc', {
       hostElement = win.document.createElement('div');
       importDoc = win.document.implementation.createHTMLDocument('');
       importDoc.body.appendChild(win.document.createElement('child'));
-      ampdoc = new AmpDocShadow(win, docUrl, win.document.createElement('div'));
+      const shadowRoot = shadowembed.createShadowRoot(hostElement);
+      ampdoc = new AmpDocShadow(win, docUrl, shadowRoot);
 
       ampdocServiceMock.expects('installShadowDoc_')
           .withExactArgs(
               docUrl,
-              sinon.match(arg => arg == hostElement.shadowRoot))
+              sinon.match(arg => arg == getShadowRoot(hostElement)))
           .returns(ampdoc)
           .atLeast(0);
       ampdocServiceMock.expects('getAmpDoc')
-          .withExactArgs(sinon.match(arg => arg == hostElement.shadowRoot))
+          .withExactArgs(sinon.match(arg => arg == getShadowRoot(hostElement)))
           .returns(ampdoc)
           .atLeast(0);
     });
@@ -584,7 +596,7 @@ describes.realWin('runtime multidoc', {
       const ret = win.AMP.attachShadowDoc(hostElement, importDoc, docUrl);
       expect(ret).to.exist;
 
-      const shadowRoot = hostElement.shadowRoot;
+      const shadowRoot = getShadowRoot(hostElement);
 
       // URL is set.
       expect(shadowRoot.AMP.url).to.equal(docUrl);
@@ -651,7 +663,7 @@ describes.realWin('runtime multidoc', {
 
     it('should import body', () => {
       win.AMP.attachShadowDoc(hostElement, importDoc, docUrl);
-      const shadowRoot = hostElement.shadowRoot;
+      const shadowRoot = getShadowRoot(hostElement);
       const body = shadowRoot.querySelector('body') ||
           shadowRoot.querySelector('amp-body');
       expect(body).to.exist;
@@ -667,7 +679,7 @@ describes.realWin('runtime multidoc', {
       importDoc.head.appendChild(titleEl);
       const ret = win.AMP.attachShadowDoc(hostElement, importDoc, docUrl);
       expect(ret.title).to.equal('test title');
-      expect(hostElement.shadowRoot.AMP.title).to.equal('test title');
+      expect(getShadowRoot(hostElement).AMP.title).to.equal('test title');
     });
 
     it('should read canonical element', () => {
@@ -708,20 +720,20 @@ describes.realWin('runtime multidoc', {
       styleEl.setAttribute('amp-boilerplate', '');
       importDoc.head.appendChild(styleEl);
       win.AMP.attachShadowDoc(hostElement, importDoc, docUrl);
-      const shadowRoot = hostElement.shadowRoot;
+      const shadowRoot = getShadowRoot(hostElement);
       expect(shadowRoot.querySelector('style[amp-boilerplate]')).to.not.exist;
     });
 
     it('should import custom style', () => {
       const styleEl = win.document.createElement('style');
       styleEl.setAttribute('amp-custom', '');
-      styleEl.textContent = '/*custom*/';
+      styleEl.textContent = '.custom{}';
       importDoc.head.appendChild(styleEl);
       win.AMP.attachShadowDoc(hostElement, importDoc, docUrl);
-      const shadowRoot = hostElement.shadowRoot;
+      const shadowRoot = getShadowRoot(hostElement);
       expect(shadowRoot.querySelector('style[amp-custom]')).to.exist;
       expect(shadowRoot.querySelector('style[amp-custom]').textContent)
-          .to.equal('/*custom*/');
+          .to.contain('.custom');
     });
 
     it('should ignore runtime extension', () => {
@@ -741,8 +753,8 @@ describes.realWin('runtime multidoc', {
       scriptEl.setAttribute('src', 'https://cdn.ampproject.org/other.js');
       importDoc.head.appendChild(scriptEl);
       win.AMP.attachShadowDoc(hostElement, importDoc, docUrl);
-      expect(hostElement.shadowRoot.querySelector('script[data-id="unknown1"]'))
-          .to.not.exist;
+      expect(getShadowRoot(hostElement)
+          .querySelector('script[data-id="unknown1"]')).to.not.exist;
       expect(win.document.querySelector('script[data-id="unknown1"]'))
           .to.not.exist;
     });
@@ -788,9 +800,9 @@ describes.realWin('runtime multidoc', {
       scriptEl.textContent = '{}';
       importDoc.head.appendChild(scriptEl);
       win.AMP.attachShadowDoc(hostElement, importDoc, docUrl);
-      expect(hostElement.shadowRoot.querySelector('script[data-id="test1"]'))
-          .to.exist;
-      expect(hostElement.shadowRoot.querySelector(
+      expect(getShadowRoot(hostElement)
+          .querySelector('script[data-id="test1"]')).to.exist;
+      expect(getShadowRoot(hostElement).querySelector(
           'script[data-id="test1"]').textContent).to.equal('{}');
     });
 
@@ -803,8 +815,8 @@ describes.realWin('runtime multidoc', {
       scriptEl2.setAttribute('data-id', 'test1');
       importDoc.head.appendChild(scriptEl2);
       win.AMP.attachShadowDoc(hostElement, importDoc, docUrl);
-      expect(hostElement.shadowRoot.querySelector('script[data-id="test1"]'))
-          .to.not.exist;
+      expect(getShadowRoot(hostElement)
+          .querySelector('script[data-id="test1"]')).to.not.exist;
     });
 
     it('should start as visible by default', () => {
@@ -857,40 +869,40 @@ describes.realWin('runtime multidoc', {
     });
 
     function attach(docUrl) {
-      const host = win.document.createElement('div');
-      win.document.body.appendChild(host);
+      const hostElement = win.document.createElement('div');
+      win.document.body.appendChild(hostElement);
       const importDoc = win.document.implementation.createHTMLDocument('');
-      const ampdoc = new AmpDocShadow(win, docUrl,
-          win.document.createElement('div'));
+      const shadowRoot = shadowembed.createShadowRoot(hostElement);
+      const ampdoc = new AmpDocShadow(win, docUrl, shadowRoot);
 
       ampdocServiceMock.expects('installShadowDoc_')
           .withExactArgs(
               docUrl,
-              sinon.match(arg => arg == host.shadowRoot))
+              sinon.match(arg => arg == getShadowRoot(hostElement)))
           .returns(ampdoc)
           .atLeast(0);
       ampdocServiceMock.expects('getAmpDoc')
-          .withExactArgs(sinon.match(arg => arg == host.shadowRoot))
+          .withExactArgs(sinon.match(arg => arg == getShadowRoot(hostElement)))
           .returns(ampdoc)
           .atLeast(0);
 
-      const amp = win.AMP.attachShadowDoc(host, importDoc, docUrl);
+      const amp = win.AMP.attachShadowDoc(hostElement, importDoc, docUrl);
       const viewer = getServiceForDoc(ampdoc, 'viewer');
       const broadcastReceived = sandbox.spy();
       viewer.onBroadcast(broadcastReceived);
-      const onMessage = sandbox.spy();
+      const onMessage = sandbox.stub();
       amp.onMessage(function(eventType, data) {
         if (eventType == 'ignore' || eventType == 'documentLoaded') {
-          return undefined;
+          return Promise.resolve();
         }
         return onMessage(eventType, data);
       });
-      return {host, amp, ampdoc, viewer, broadcastReceived, onMessage};
+      return {hostElement, amp, ampdoc, viewer, broadcastReceived, onMessage};
     }
 
     it('should broadcast to all but sender', () => {
       doc1.viewer.broadcast({test: 1});
-      return doc1.viewer.sendMessage('ignore', {}).then(() => {
+      return doc1.viewer.sendMessageAwaitResponse('ignore', {}).then(() => {
         return timer.promise(0);
       }).then(() => {
         // Sender is not called.
@@ -912,7 +924,7 @@ describes.realWin('runtime multidoc', {
     it('should stop broadcasting after close', () => {
       doc3.amp.close();
       doc1.viewer.broadcast({test: 1});
-      return doc1.viewer.sendMessage('ignore', {}).then(() => {
+      return doc1.viewer.sendMessageAwaitResponse('ignore', {}).then(() => {
         return timer.promise(0);
       }).then(() => {
         // Sender is not called, closed is not called.
@@ -926,9 +938,9 @@ describes.realWin('runtime multidoc', {
     });
 
     it('should stop broadcasting after force-close', () => {
-      doc3.host.parentNode.removeChild(doc3.host);
+      doc3.hostElement.parentNode.removeChild(doc3.hostElement);
       doc1.viewer.broadcast({test: 1});
-      return doc1.viewer.sendMessage('ignore', {}).then(() => {
+      return doc1.viewer.sendMessageAwaitResponse('ignore', {}).then(() => {
         return timer.promise(0);
       }).then(() => {
         // Sender is not called, closed is not called.
@@ -941,14 +953,17 @@ describes.realWin('runtime multidoc', {
       });
     });
 
+
     it('should send message', () => {
-      return doc1.viewer.sendMessage('test3', {test: 3}).then(() => {
-        return timer.promise(0);
-      }).then(() => {
-        expect(doc1.onMessage).to.be.calledOnce;
-        expect(doc1.onMessage.args[0][0]).to.equal('test3');
-        expect(doc1.onMessage.args[0][1]).to.deep.equal({test: 3});
-      });
+      doc1.onMessage.returns(Promise.resolve());
+      return doc1.viewer.sendMessageAwaitResponse('test3', {test: 3}).then(
+          () => {
+            return timer.promise(0);
+          }).then(() => {
+            expect(doc1.onMessage).to.be.calledOnce;
+            expect(doc1.onMessage.args[0][0]).to.equal('test3');
+            expect(doc1.onMessage.args[0][1]).to.deep.equal({test: 3});
+          });
     });
 
     it('should receive message', () => {
@@ -958,3 +973,7 @@ describes.realWin('runtime multidoc', {
     });
   });
 });
+
+function getShadowRoot(hostElement) {
+  return hostElement.shadowRoot || hostElement.__AMP_SHADOW_ROOT;
+}

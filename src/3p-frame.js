@@ -14,11 +14,9 @@
  * limitations under the License.
  */
 
-
 import {dev, user} from './log';
 import {documentInfoForDoc} from './document-info';
 import {getLengthNumeral} from '../src/layout';
-import {getService} from './service';
 import {tryParseJson} from './json';
 import {getMode} from './mode';
 import {getModeObject} from './mode-object';
@@ -26,6 +24,8 @@ import {dashToCamelCase} from './string';
 import {parseUrl, assertHttpsUrl} from './url';
 import {viewerForDoc} from './viewer';
 import {urls} from './config';
+import {setStyle} from './style';
+import {domFingerprint} from './utils/dom-fingerprint';
 
 
 /** @type {!Object<string,number>} Number of 3p frames on the for that type. */
@@ -70,6 +70,7 @@ function getFrameAttributes(parentWindow, element, opt_type, opt_context) {
   attributes._context = {
     referrer: viewer.getUnconfirmedReferrerUrl(),
     canonicalUrl: docInfo.canonicalUrl,
+    sourceUrl: docInfo.sourceUrl,
     pageViewId: docInfo.pageViewId,
     location: {
       href: locationHref,
@@ -80,6 +81,7 @@ function getFrameAttributes(parentWindow, element, opt_type, opt_context) {
     hidden: !viewer.isVisible(),
     amp3pSentinel: generateSentinel(parentWindow),
     initialIntersection: element.getIntersectionChangeEntry(),
+    domFingerprint: domFingerprint(element),
     startTime,
   };
   Object.assign(attributes._context, opt_context);
@@ -124,8 +126,8 @@ export function getIframe(parentWindow, parentElement, opt_type, opt_context) {
   iframe.ampLocation = parseUrl(src);
   iframe.width = attributes.width;
   iframe.height = attributes.height;
-  iframe.style.border = 'none';
   iframe.setAttribute('scrolling', 'no');
+  setStyle(iframe, 'border', 'none');
   /** @this {!Element} */
   iframe.onload = function() {
     // Chrome does not reflect the iframe readystate.
@@ -192,36 +194,51 @@ export function preloadBootstrap(window, preconnect) {
  * @visibleForTesting
  */
 export function getBootstrapBaseUrl(parentWindow, opt_strictForUnitTest) {
-  return getService(self, 'bootstrapBaseUrl', () => {
-    return getCustomBootstrapBaseUrl(parentWindow, opt_strictForUnitTest) ||
-      getDefaultBootstrapBaseUrl(parentWindow);
-  });
+  // The value is cached in a global variable called `bootstrapBaseUrl`;
+  const bootstrapBaseUrl = parentWindow.bootstrapBaseUrl;
+  if (bootstrapBaseUrl) {
+    return bootstrapBaseUrl;
+  }
+  return parentWindow.bootstrapBaseUrl =
+      getCustomBootstrapBaseUrl(parentWindow, opt_strictForUnitTest)
+          || getDefaultBootstrapBaseUrl(parentWindow);
 }
 
 export function setDefaultBootstrapBaseUrlForTesting(url) {
   overrideBootstrapBaseUrl = url;
 }
 
+export function resetBootstrapBaseUrlForTesting(win) {
+  win.bootstrapBaseUrl = undefined;
+}
+
 /**
  * Returns the default base URL for 3p bootstrap iframes.
  * @param {!Window} parentWindow
+ * @param {string=} opt_srcFileBasename
  * @return {string}
  */
-function getDefaultBootstrapBaseUrl(parentWindow) {
+export function getDefaultBootstrapBaseUrl(parentWindow, opt_srcFileBasename) {
+  const srcFileBasename = opt_srcFileBasename || 'frame';
   if (getMode().localDev || getMode().test) {
     if (overrideBootstrapBaseUrl) {
       return overrideBootstrapBaseUrl;
     }
     return getAdsLocalhost(parentWindow)
-        + '/dist.3p/current'
-        + (getMode().minified ? '-min/frame' : '/frame.max')
+        + '/dist.3p/'
+        + (getMode().minified ? `$internalRuntimeVersion$/${srcFileBasename}`
+            : `current/${srcFileBasename}.max`)
         + '.html';
   }
   return 'https://' + getSubDomain(parentWindow) +
-      `.${urls.thirdPartyFrameHost}/$internalRuntimeVersion$/frame.html`;
+      `.${urls.thirdPartyFrameHost}/$internalRuntimeVersion$/` +
+      `${srcFileBasename}.html`;
 }
 
 function getAdsLocalhost(win) {
+  if (urls.localDev) {
+    return `//${urls.thirdPartyFrameHost}`;
+  }
   return 'http://ads.localhost:'
       + (win.location.port || win.parent.location.port);
 }
@@ -242,7 +259,7 @@ export function getSubDomain(win) {
  * @param {!Window} win
  * @return {string}
  */
-function getRandom(win) {
+export function getRandom(win) {
   let rand;
   if (win.crypto && win.crypto.getRandomValues) {
     // By default use 2 32 bit integers.
@@ -308,4 +325,62 @@ export function generateSentinel(parentWindow) {
  */
 export function resetCountForTesting() {
   count = {};
+}
+
+
+/** @const */
+const AMP_MESSAGE_PREFIX = 'amp-';
+
+/** @enum {string} */
+export const MessageType = {
+  // For amp-ad
+  SEND_EMBED_STATE: 'send-embed-state',
+  EMBED_STATE: 'embed-state',
+  SEND_EMBED_CONTEXT: 'send-embed-context',
+  EMBED_CONTEXT: 'embed-context',
+  SEND_INTERSECTIONS: 'send-intersections',
+  INTERSECTION: 'intersection',
+  EMBED_SIZE: 'embed-size',
+  EMBED_SIZE_CHANGED: 'embed-size-changed',
+  EMBED_SIZE_DENIED: 'embed-size-denied',
+
+  // For amp-inabox
+  SEND_POSITIONS: 'send-positions',
+  POSITION: 'position',
+};
+
+/**
+ * Serialize an AMP post message.
+ *
+ * @param type {string}
+ * @param sentinel {string}
+ * @param opt_data {Object=}
+ * @returns {string}
+ */
+export function serializeMessage(type, sentinel, opt_data) {
+  // TODO: consider wrap the data in a "data" field. { type, sentinal, data }
+  const message = opt_data || {};
+  message.type = type;
+  message.sentinel = sentinel;
+  return AMP_MESSAGE_PREFIX + JSON.stringify(message);
+}
+
+/**
+ * Deserialize an AMP post message.
+ * Returns null if it's not valid AMP message format.
+ *
+ * @param message {*}
+ * @returns {?JSONType}
+ */
+export function deserializeMessage(message) {
+  if (typeof message !== 'string' || message.indexOf(AMP_MESSAGE_PREFIX) != 0) {
+    return null;
+  }
+  try {
+    return /** @type {!JSONType} */ (JSON.parse(
+        message.substr(AMP_MESSAGE_PREFIX.length)));
+  } catch (e) {
+    dev().error('MESSAGING', 'Failed to parse message: ' + message, e);
+    return null;
+  }
 }

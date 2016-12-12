@@ -15,11 +15,15 @@
  */
 
 import {
+  getFriendlyIframeEmbedOptional,
   installFriendlyIframeEmbed,
   mergeHtmlForTesting,
+  setFriendlyIframeEmbedVisible,
   setSrcdocSupportedForTesting,
 } from '../../src/friendly-iframe-embed';
+import {getStyle} from '../../src/style';
 import {extensionsFor} from '../../src/extensions';
+import {installServiceInEmbedScope} from '../../src/service';
 import {loadPromise} from '../../src/event-helper';
 import {resourcesForDoc} from '../../src/resources';
 import * as sinon from 'sinon';
@@ -76,9 +80,13 @@ describe('friendly-iframe-embed', () => {
       expect(embed.win).to.equal(iframe.contentWindow);
       expect(embed.iframe).to.equal(iframe);
       expect(embed.spec.url).to.equal('https://acme.org/url1');
+      expect(getFriendlyIframeEmbedOptional(embed.iframe)).to.equal(embed);
 
       // Iframe is made visible again.
       expect(iframe.style.visibility).to.equal('');
+      expect(embed.win.document.body.style.visibility).to.equal('visible');
+      expect(String(embed.win.document.body.style.opacity)).to.equal('1');
+      expect(getStyle(embed.win.document.body, 'animation')).to.equal('none');
 
       // BASE element has been inserted.
       expect(embed.win.document.querySelector('base').href)
@@ -128,7 +136,7 @@ describe('friendly-iframe-embed', () => {
         .withExactArgs(sinon.match(arg => {
           installExtWin = arg;
           return true;
-        }), ['amp-test'])
+        }), ['amp-test'], /* preinstallCallback */ undefined)
         .once();
 
     const embedPromise = installFriendlyIframeEmbed(iframe, document.body, {
@@ -139,6 +147,22 @@ describe('friendly-iframe-embed', () => {
     return embedPromise.then(embed => {
       expect(installExtWin).to.equal(embed.win);
     });
+  });
+
+  it('should pass pre-install callback', () => {
+
+    const preinstallCallback = function() {};
+
+    // Extensions are installed.
+    extensionsMock.expects('installExtensionsInChildWindow')
+        .withExactArgs(sinon.match(() => true), [], preinstallCallback)
+        .once();
+
+    const embedPromise = installFriendlyIframeEmbed(iframe, document.body, {
+      url: 'https://acme.org/url1',
+      html: '<amp-test></amp-test>',
+    }, preinstallCallback);
+    return embedPromise;
   });
 
   it('should uninstall all resources', () => {
@@ -154,6 +178,48 @@ describe('friendly-iframe-embed', () => {
           .withExactArgs(embed.win)
           .once();
       embed.destroy();
+    });
+  });
+
+  it('should install and dispose services', () => {
+    const disposeSpy = sandbox.spy();
+    const embedService = {
+      dispose: disposeSpy,
+    };
+    const embedPromise = installFriendlyIframeEmbed(iframe, document.body, {
+      url: 'https://acme.org/url1',
+      html: '<amp-test></amp-test>',
+    }, embedWin => {
+      installServiceInEmbedScope(embedWin, 'c', embedService);
+    });
+    return embedPromise.then(embed => {
+      expect(embed.win.services['c'].obj).to.equal(embedService);
+      expect(disposeSpy).to.not.be.called;
+      embed.destroy();
+      expect(disposeSpy).to.be.calledOnce;
+    });
+  });
+
+  it('should start invisible by default and update on request', () => {
+    extensionsMock.expects('installExtensionsInChildWindow').once();
+    const embedPromise = installFriendlyIframeEmbed(iframe, document.body, {
+      url: 'https://acme.org/url1',
+      html: '',
+      extensionIds: [],
+    });
+    return embedPromise.then(embed => {
+      expect(embed.isVisible()).to.be.false;
+      const spy = sandbox.spy();
+      embed.onVisibilityChanged(spy);
+
+      setFriendlyIframeEmbedVisible(embed, false);
+      expect(embed.isVisible()).to.be.false;
+      expect(spy).to.not.be.called;
+
+      setFriendlyIframeEmbedVisible(embed, true);
+      expect(embed.isVisible()).to.be.true;
+      expect(spy).to.be.calledOnce;
+      expect(spy.args[0][0]).to.equal(true);
     });
   });
 
@@ -327,6 +393,7 @@ describe('friendly-iframe-embed', () => {
 
       loadListener = undefined;
       iframe = {
+        tagName: 'IFRAME',
         ownerDocument: {defaultView: win},
         style: {},
         setAttribute: () => {},
@@ -341,7 +408,7 @@ describe('friendly-iframe-embed', () => {
       };
       contentWindow = {};
       contentDocument = {};
-      contentBody = {};
+      contentBody = {nodeType: 1, style: {}};
       container = {
         appendChild: () => {},
       };
@@ -424,6 +491,7 @@ describe('friendly-iframe-embed', () => {
         html: '<body></body>',
       });
       expect(polls).to.have.length(1);
+      iframe.contentWindow = contentWindow;
       loadListener();
       return embedPromise.then(() => {
         expect(polls).to.have.length(0);
@@ -436,6 +504,7 @@ describe('friendly-iframe-embed', () => {
         html: '<body></body>',
       });
       expect(polls).to.have.length(1);
+      iframe.contentWindow = contentWindow;
       errorListener();
       return embedPromise.then(() => {
         expect(polls).to.have.length(0);

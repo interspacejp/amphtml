@@ -322,6 +322,20 @@ describe('FixedLayer', () => {
       // Remove.
       fixedLayer.removeElement(element3);
       expect(fixedLayer.fixedElements_).to.have.length(2);
+
+      //Add with forceTransfer
+      fixedLayer.addElement(element3, '*', true);
+      expect(updateStub.callCount).to.equal(2);
+      expect(fixedLayer.fixedElements_).to.have.length(3);
+      const fe1 = fixedLayer.fixedElements_[2];
+      expect(fe1.id).to.equal('F3');
+      expect(fe1.element).to.equal(element3);
+      expect(fe1.selectors).to.deep.equal(['*']);
+      expect(fe1.forceTransfer).to.be.true;
+
+      // Remove.
+      fixedLayer.removeElement(element3);
+      expect(fixedLayer.fixedElements_).to.have.length(2);
     });
 
     it('should remove node when disappeared from DOM', () => {
@@ -449,6 +463,38 @@ describe('FixedLayer', () => {
 
       expect(state['F0'].fixed).to.equal(true);
       expect(state['F0'].top).to.equal('0px');
+    });
+
+    it('should override implicit top = auto to 0 w/transient padding', () => {
+      element1.computedStyle['position'] = 'fixed';
+      element1.computedStyle['top'] = '11px';
+      element1.autoOffsetTop = 11;
+      element1.offsetWidth = 10;
+      element1.offsetHeight = 10;
+
+      expect(vsyncTasks).to.have.length(1);
+      const state = {};
+      vsyncTasks[0].measure(state);
+
+      expect(state['F0'].fixed).to.equal(true);
+      expect(state['F0'].top).to.equal('0px');
+
+      // Update to transient padding.
+      sandbox.stub(fixedLayer, 'update', () => {});
+      fixedLayer.updatePaddingTop(22, /* transient */ true);
+      vsyncTasks[0].measure(state);
+      expect(state['F0'].fixed).to.equal(true);
+      expect(state['F0'].top).to.equal('0px');
+      expect(fixedLayer.paddingTop_).to.equal(22);
+      expect(fixedLayer.committedPaddingTop_).to.equal(11);
+
+      // Update to non-transient padding.
+      fixedLayer.updatePaddingTop(22, /* transient */ false);
+      vsyncTasks[0].measure(state);
+      expect(state['F0'].fixed).to.equal(true);
+      expect(state['F0'].top).to.equal(''); // Reset completely.
+      expect(fixedLayer.paddingTop_).to.equal(22);
+      expect(fixedLayer.committedPaddingTop_).to.equal(22);
     });
 
     it('should always collect and update top = 0', () => {
@@ -642,6 +688,27 @@ describe('FixedLayer', () => {
 
       expect(vsyncTasks).to.have.length(1);
       const state = {};
+      vsyncTasks[0].measure(state);
+
+      expect(state['F0'].fixed).to.be.true;
+      expect(state['F0'].transferrable).to.equal(true);
+    });
+
+    it('should not disregard invisible element if it has forceTransfer', () => {
+      element1.computedStyle['position'] = 'fixed';
+      element1.offsetWidth = 0;
+      element1.offsetHeight = 0;
+
+      expect(vsyncTasks).to.have.length(1);
+      let state = {};
+      vsyncTasks[0].measure(state);
+      expect(state['F0'].fixed).to.be.false;
+      expect(state['F0'].transferrable).to.equal(false);
+
+      // Add.
+      state = {};
+      fixedLayer.setupFixedElement_(element1, '*', true);
+      expect(vsyncTasks).to.have.length(1);
       vsyncTasks[0].measure(state);
 
       expect(state['F0'].fixed).to.be.true;

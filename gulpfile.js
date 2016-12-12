@@ -48,15 +48,17 @@ var extensions = {};
 declareExtension('amp-access', '0.1', true, 'NO_TYPE_CHECK');
 declareExtension('amp-access-laterpay', '0.1', false, 'NO_TYPE_CHECK');
 declareExtension('amp-accordion', '0.1', true);
-declareExtension('amp-ad', '0.1', false);
+declareExtension('amp-ad', '0.1', true);
 declareExtension('amp-ad-network-adsense-impl', 0.1, false);
 declareExtension('amp-ad-network-doubleclick-impl', 0.1, false);
 declareExtension('amp-ad-network-fake-impl', 0.1, false);
 declareExtension('amp-analytics', '0.1', false);
 declareExtension('amp-anim', '0.1', false);
+declareExtension('amp-animation', '0.1', false);
 declareExtension('amp-apester-media', '0.1', true, 'NO_TYPE_CHECK');
 declareExtension('amp-app-banner', '0.1', true);
 declareExtension('amp-audio', '0.1', false);
+declareExtension('amp-auto-ads', '0.1', false);
 declareExtension('amp-brid-player', '0.1', false);
 declareExtension('amp-brightcove', '0.1', false);
 declareExtension('amp-kaltura-player', '0.1', false);
@@ -71,12 +73,13 @@ declareExtension('amp-form', '0.1', true);
 declareExtension('amp-fresh', '0.1', true);
 declareExtension('amp-fx-flying-carpet', '0.1', true);
 declareExtension('amp-gfycat', '0.1', false);
+declareExtension('amp-hulu', '0.1', false);
 declareExtension('amp-iframe', '0.1', false, 'NO_TYPE_CHECK');
 declareExtension('amp-image-lightbox', '0.1', true);
 declareExtension('amp-instagram', '0.1', false);
 declareExtension('amp-install-serviceworker', '0.1', false);
 declareExtension('amp-jwplayer', '0.1', false, 'NO_TYPE_CHECK');
-declareExtension('amp-lightbox', '0.1', false);
+declareExtension('amp-lightbox', '0.1', true);
 declareExtension('amp-lightbox-viewer', '0.1', true, 'NO_TYPE_CHECK');
 declareExtension('amp-list', '0.1', false, 'NO_TYPE_CHECK');
 declareExtension('amp-live-list', '0.1', true);
@@ -84,11 +87,15 @@ declareExtension('amp-mustache', '0.1', false, 'NO_TYPE_CHECK');
 declareExtension('amp-o2-player', '0.1', false, 'NO_TYPE_CHECK');
 declareExtension('amp-pinterest', '0.1', true, 'NO_TYPE_CHECK');
 declareExtension('amp-reach-player', '0.1', false);
+declareExtension('amp-reddit', '0.1', false);
 declareExtension('amp-share-tracking', '0.1', false);
 declareExtension('amp-sidebar', '0.1', true);
 declareExtension('amp-soundcloud', '0.1', false);
 declareExtension('amp-springboard-player', '0.1', false);
 declareExtension('amp-sticky-ad', '0.1', true);
+declareExtension('amp-sticky-ad', '1.0', true);
+declareExtension('amp-selector', '0.1', false);
+
 /**
  * @deprecated `amp-slides` is deprecated and will be deleted before 1.0.
  * Please see {@link AmpCarousel} with `type=slides` attribute instead.
@@ -101,6 +108,7 @@ declareExtension('amp-vimeo', '0.1', false, 'NO_TYPE_CHECK');
 declareExtension('amp-vine', '0.1', false, 'NO_TYPE_CHECK');
 declareExtension('amp-viz-vega', '0.1', true);
 declareExtension('amp-google-vrview-image', '0.1', false, 'NO_TYPE_CHECK');
+declareExtension('amp-viewer-integration', '0.1', false);
 declareExtension('amp-youtube', '0.1', false);
 
 /**
@@ -161,8 +169,19 @@ function compile(watch, shouldMinify, opt_preventRemoveAndMakeDir,
     minify: shouldMinify,
     preventRemoveAndMakeDir: opt_preventRemoveAndMakeDir,
     externs: ['ads/ads.extern.js',],
-    includeBasicPolyfills: true,
     include3pDirectories: true,
+    includePolyfills: true,
+  });
+
+  compileJs('./3p/', 'ampcontext-lib.js',
+      './dist.3p/' + (shouldMinify ? internalRuntimeVersion : 'current'), {
+    minifiedName: 'ampcontext-v0.js',
+    checkTypes: opt_checkTypes,
+    watch: watch,
+    minify: false,
+    preventRemoveAndMakeDir: opt_preventRemoveAndMakeDir,
+    externs: ['ads/ads.extern.js',],
+    includeBasicPolyfills: false,
   });
 
   // For compilation with babel we start with the amp-babel entry point,
@@ -201,11 +220,43 @@ function compile(watch, shouldMinify, opt_preventRemoveAndMakeDir,
     wrapper: '<%= contents %>'
   });
 
+  // Entry point for inabox runtime.
+  compileJs('./src/inabox/', 'amp-inabox.js', './dist', {
+    toName: 'amp-inabox.js',
+    minifiedName: 'amp4ads-v0.js',
+    includePolyfills: true,
+    checkTypes: opt_checkTypes,
+    watch: watch,
+    preventRemoveAndMakeDir: opt_preventRemoveAndMakeDir,
+    minify: shouldMinify,
+    wrapper: '<%= contents %>',
+  });
+
+  // inabox-host
+  compileJs('./ads/inabox/', 'inabox-host.js', './dist', {
+    toName: 'amp-inabox-host.js',
+    minifiedName: 'amp4ads-host-v0.js',
+    includePolyfills: false,
+    checkTypes: opt_checkTypes,
+    watch: watch,
+    preventRemoveAndMakeDir: opt_preventRemoveAndMakeDir,
+    minify: shouldMinify,
+    wrapper: '<%= contents %>',
+  });
+
   var frameHtml = '3p/frame.max.html';
-  thirdPartyBootstrap(frameHtml, shouldMinify);
+  thirdPartyBootstrap(frameHtml, 'frame.html', shouldMinify);
   if (watch) {
     $$.watch(frameHtml, function() {
-      thirdPartyBootstrap(frameHtml, shouldMinify);
+      thirdPartyBootstrap(frameHtml, 'frame.html', shouldMinify);
+    });
+  }
+
+  var nameFrameHtml = '3p/nameframe.max.html';
+  thirdPartyBootstrap(nameFrameHtml, 'nameframe.html',shouldMinify);
+  if (watch) {
+    $$.watch(nameFrameHtml, function () {
+      thirdPartyBootstrap(nameFrameHtml, 'nameframe.html', shouldMinify);
     });
   }
 }
@@ -331,7 +382,7 @@ function buildExtensionJs(path, name, version, options) {
     // The `function` is wrapped in `()` to avoid lazy parsing it,
     // since it will be immediately executed anyway.
     // See https://github.com/ampproject/amphtml/issues/3977
-    wrapper: options.noWrapper ? '' : ('(window.AMP = window.AMP || [])' +
+    wrapper: options.noWrapper ? '' : ('(self.AMP = self.AMP || [])' +
         '.push({n:"' + name + '", f:(function(AMP) {<%= contents %>\n})});'),
   });
 }
@@ -340,6 +391,18 @@ function buildExtensionJs(path, name, version, options) {
  * Main Build
  */
 function build() {
+  var TESTING_HOST = process.env.AMP_TESTING_HOST;
+  if (argv.fortesting && typeof TESTING_HOST == 'string') {
+    var AMP_CONFIG = {
+      thirdPartyFrameHost: TESTING_HOST,
+      thirdPartyFrameRegex: TESTING_HOST,
+      localDev: true,
+    };
+    console.log($$.util.colors.green('trying to write AMP_CONFIG.'));
+    fs.writeFileSync('node_modules/AMP_CONFIG.json',
+        JSON.stringify(AMP_CONFIG));
+    console.log($$.util.colors.green('AMP_CONFIG written successfully.'));
+  }
   process.env.NODE_ENV = 'development';
   polyfillsForTests();
   buildAlp();
@@ -381,7 +444,9 @@ function checkTypes() {
   var compileSrcs = [
     './src/amp-babel.js',
     './src/amp-shadow.js',
+    './src/inabox/amp-inabox.js',
     './ads/alp/install-alp.js',
+    './ads/inabox/inabox-host.js',
     './src/service-worker/shell.js',
     './src/service-worker/core.js',
     './src/service-worker/kill.js',
@@ -392,17 +457,18 @@ function checkTypes() {
     return './extensions/' + extension.name + '/' +
         extension.version + '/' + extension.name + '.js';
   }).sort();
-  closureCompile(compileSrcs.concat(extensionSrcs),  './dist',
+  closureCompile(compileSrcs.concat(extensionSrcs), './dist',
       'check-types.js', {
+        include3pDirectories: false,
         includePolyfills: true,
         checkTypes: true,
       });
   // Type check 3p/ads code.
-  closureCompile(['./3p/integration.js'],  './dist',
+  closureCompile(['./3p/integration.js'], './dist',
       'integration-check-types.js', {
-        externs: ['ads/ads.extern.js',],
-        includeBasicPolyfills: true,
+        externs: ['ads/ads.extern.js'],
         include3pDirectories: true,
+        includePolyfills: true,
         checkTypes: true,
       });
 }
@@ -412,9 +478,10 @@ function checkTypes() {
  * copies, and generates symlink to it.
  *
  * @param {string} input
+ * @param {string} outputName
  * @param {boolean} shouldMinify
  */
-function thirdPartyBootstrap(input, shouldMinify) {
+function thirdPartyBootstrap(input, outputName, shouldMinify) {
   $$.util.log('Processing ' + input);
 
   if (!shouldMinify) {
@@ -433,7 +500,7 @@ function thirdPartyBootstrap(input, shouldMinify) {
   // Convert default relative URL to absolute min URL.
   var html = fs.readFileSync(input, 'utf8')
       .replace(/\.\/integration\.js/g, integrationJs);
-  $$.file('frame.html', html, {src: true})
+  $$.file(outputName, html, {src: true})
       .pipe(gulp.dest('dist.3p/' + internalRuntimeVersion))
       .on('end', function() {
         var aliasToLatestBuild = 'dist.3p/current-min';
@@ -607,7 +674,7 @@ function buildExperiments(options) {
   // Build HTML.
   $$.util.log('Processing ' + htmlPath);
   var html = fs.readFileSync(htmlPath, 'utf8');
-  var minHtml = html.replace('../../dist.tools/experiments/experiments.max.js',
+  var minHtml = html.replace('/dist.tools/experiments/experiments.js',
       'https://cdn.ampproject.org/v0/experiments.js');
   gulp.src(htmlPath)
       .pipe($$.file('experiments.cdn.html', minHtml))
@@ -787,6 +854,27 @@ function mkdirSync(path) {
     }
   }
 }
+
+/**
+ * Patches Web Animations API by wrapping its body into `install` function.
+ * This gives us an option to call polyfill directly on the main window
+ * or a friendly iframe.
+ */
+function patchWebAnimations() {
+  // Copies web-animations-js into a new file that has an export.
+  const patchedName = 'node_modules/web-animations-js/' +
+      'web-animations.install.js';
+  var file = fs.readFileSync(
+      'node_modules/web-animations-js/' +
+      'web-animations.min.js').toString();
+  // Wrap the contents inside the install function.
+  file = 'exports.installWebAnimations = function(window) {\n' +
+      'var document = window.document;\n' +
+      file + '\n' +
+      '}\n';
+  fs.writeFileSync(patchedName, file);
+}
+patchWebAnimations();
 
 
 /**

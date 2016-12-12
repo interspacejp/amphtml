@@ -18,6 +18,7 @@
 import './polyfills';
 import {dev} from './log';
 
+
 /**
  * Holds info about a service.
  * - obj: Actual service implementation when available.
@@ -48,6 +49,22 @@ export class Disposable {
 
 
 /**
+ * This interface provides a `adoptEmbedWindow` method that will be called by
+ * runtime for a new embed window.
+ * @interface
+ */
+export class EmbeddableService {
+
+  /**
+   * Instructs the service to adopt the embed window and add any necessary
+   * listeners and resources.
+   * @param {!Window} unusedEmbedWin
+   */
+  adoptEmbedWindow(unusedEmbedWin) {}
+}
+
+
+/**
  * Returns a service with the given id. Assumes that it has been constructed
  * already.
  * @param {!Window} win
@@ -65,6 +82,24 @@ export function getExistingServiceForWindow(win, id) {
 /**
  * Returns a service with the given id. Assumes that it has been constructed
  * already.
+ * @param {!Window} win
+ * @param {string} id
+ * @return {!Object} The service.
+ */
+export function getExistingServiceForWindowInEmbedScope(win, id) {
+  // First, try to resolve via local (embed) window.
+  const local = getLocalExistingServiceForEmbedWinOrNull(win, id);
+  if (local) {
+    return local;
+  }
+  // Fallback to top-level window.
+  return getExistingServiceForWindow(win, id);
+}
+
+
+/**
+ * Returns a service with the given id. Assumes that it has been constructed
+ * already.
  * @param {!Node|!./service/ampdoc-impl.AmpDoc} nodeOrDoc
  * @param {string} id
  * @return {!Object} The service.
@@ -75,6 +110,65 @@ export function getExistingServiceForDoc(nodeOrDoc, id) {
       serviceHolder.services[id] && serviceHolder.services[id].obj;
   return dev().assert(exists, `${id} doc service not found. Make sure it is ` +
       `installed.`);
+}
+
+
+/**
+ * Returns a service with the given id. Assumes that it has been constructed
+ * already.
+ * @param {!Node|!./service/ampdoc-impl.AmpDoc} nodeOrDoc
+ * @param {string} id
+ * @return {!Object} The service.
+ */
+export function getExistingServiceForDocInEmbedScope(nodeOrDoc, id) {
+  // First, try to resolve via local (embed) window.
+  if (nodeOrDoc.nodeType) {
+    // If a node is passed, try to resolve via this node.
+    const win = /** @type {!Document} */ (
+        nodeOrDoc.ownerDocument || nodeOrDoc).defaultView;
+    const local = getLocalExistingServiceForEmbedWinOrNull(win, id);
+    if (local) {
+      return local;
+    }
+  }
+  // Fallback to ampdoc.
+  return getExistingServiceForDoc(nodeOrDoc, id);
+}
+
+
+/**
+ * Installs a service override on amp-doc level.
+ * @param {!Window} embedWin
+ * @param {string} id
+ * @param {!Object} service The service.
+ */
+export function installServiceInEmbedScope(embedWin, id, service) {
+  const topWin = getTopWindow(embedWin);
+  dev().assert(embedWin != topWin,
+      'Service override can only be installed in embed window: %s', id);
+  dev().assert(!getLocalExistingServiceForEmbedWinOrNull(embedWin, id),
+      'Service override has already been installed: %s', id);
+  getServiceInternal(embedWin, embedWin, id, () => service);
+}
+
+
+/**
+ * @param {!Window} embedWin
+ * @param {string} id
+ * @return {?Object}
+ */
+function getLocalExistingServiceForEmbedWinOrNull(embedWin, id) {
+  // Note that this method currently only resolves against the given window.
+  // It does not try to go all the way up the parent window chain. We can change
+  // this in the future, but for now this gives us a better performance.
+  const topWin = getTopWindow(embedWin);
+  if (embedWin != topWin &&
+          embedWin.services &&
+          embedWin.services[id] &&
+          embedWin.services[id].obj) {
+    return embedWin.services[id].obj;
+  }
+  return null;
 }
 
 
@@ -268,7 +362,7 @@ export function getParentWindowFrameElement(node, topWin) {
  * @param {!Node|!./service/ampdoc-impl.AmpDoc} nodeOrDoc
  * @return {!./service/ampdoc-impl.AmpDoc}
  */
-function getAmpdoc(nodeOrDoc) {
+export function getAmpdoc(nodeOrDoc) {
   if (nodeOrDoc.nodeType) {
     const win = /** @type {!Document} */ (
         nodeOrDoc.ownerDocument || nodeOrDoc).defaultView;
@@ -438,6 +532,16 @@ export function disposeServicesForDoc(ampdoc) {
 
 
 /**
+ * Disposes all disposable (implements `Disposable` interface) services in
+ * embed scope.
+ * @param {!Window} embedWin
+ */
+export function disposeServicesForEmbed(embedWin) {
+  disposeServicesInternal(embedWin);
+}
+
+
+/**
  * @param {!Object} holder Object holding the service instances.
  */
 function disposeServicesInternal(holder) {
@@ -474,6 +578,44 @@ function disposeServiceInternal(id, service) {
     // services.
     dev().error('SERVICE', 'failed to dispose service', id, e);
   }
+}
+
+
+/**
+ * Whether the specified service implements `EmbeddableService` interface.
+ * @param {!Object} service
+ * @return {boolean}
+ */
+export function isEmbeddable(service) {
+  return typeof service.adoptEmbedWindow == 'function';
+}
+
+
+/**
+ * Asserts that the specified service implements `EmbeddableService` interface
+ * and typecasts the instance to `EmbeddableService`.
+ * @param {!Object} service
+ * @return {!EmbeddableService}
+ */
+export function assertEmbeddable(service) {
+  dev().assert(isEmbeddable(service),
+      'required to implement EmbeddableService');
+  return /** @type {!EmbeddableService} */ (service);
+}
+
+
+/**
+ * Adopts an embeddable (implements `EmbeddableService` interface) service
+ * in embed scope.
+ * @param {!Window} embedWin
+ * @param {string} serviceId
+ */
+export function adoptServiceForEmbed(embedWin, serviceId) {
+  const frameElement = /** @type {!Node} */ (dev().assert(
+      embedWin.frameElement,
+      'frameElement not found for embed'));
+  const service = getExistingServiceForDoc(frameElement, serviceId);
+  assertEmbeddable(service).adoptEmbedWindow(embedWin);
 }
 
 

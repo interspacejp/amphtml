@@ -50,7 +50,6 @@ describe('amp-user-notification', () => {
   function getUserNotification(attrs = {}) {
     return createIframePromise().then(iframe_ => {
       iframe = iframe_;
-      iframe.win.ampExtendedElements = {};
       storage = getExistingServiceForDoc(iframe.ampdoc, 'storage');
       storageMock = sandbox.mock(storage);
       return buildElement(iframe.doc, iframe.ampdoc, attrs);
@@ -476,6 +475,22 @@ describe('amp-user-notification', () => {
         expect(removeFromFixedLayerStub.callCount).to.equal(1);
         expect(removeFromFixedLayerStub.getCall(0).args[0]).to.equal(el);
       });
+    });
+  });
+
+  it('should have a default `role` if unspecified', () => {
+    return getUserNotification({id: 'n1'}).then(el => {
+      const impl = el.implementation_;
+      impl.buildCallback();
+      expect(el.getAttribute('role')).to.equal('alert');
+    });
+  });
+
+  it('should not override `role` if specified', () => {
+    return getUserNotification({id: 'n1', role: 'status'}).then(el => {
+      const impl = el.implementation_;
+      impl.buildCallback();
+      expect(el.getAttribute('role')).to.equal('status');
     });
   });
 

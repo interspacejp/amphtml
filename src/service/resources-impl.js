@@ -25,8 +25,8 @@ import {closest, hasNextNodeInDocumentOrder} from '../dom';
 import {expandLayoutRect} from '../layout-rect';
 import {fromClassForDoc} from '../service';
 import {inputFor} from '../input';
-import {installViewerServiceForDoc} from './viewer-impl';
-import {installViewportServiceForDoc} from './viewport-impl';
+import {viewerForDoc} from '../viewer';
+import {viewportForDoc} from '../viewport';
 import {installVsyncService} from './vsync-impl';
 import {isArray} from '../types';
 import {dev} from '../log';
@@ -71,7 +71,7 @@ export class Resources {
     this.win = ampdoc.win;
 
     /** @const @private {!./viewer-impl.Viewer} */
-    this.viewer_ = installViewerServiceForDoc(ampdoc);
+    this.viewer_ = viewerForDoc(ampdoc);
 
     /** @private {boolean} */
     this.isRuntimeOn_ = this.viewer_.isRuntimeOn();
@@ -149,7 +149,7 @@ export class Resources {
     this.isCurrentlyBuildingPendingResources_ = false;
 
     /** @private @const {!./viewport-impl.Viewport} */
-    this.viewport_ = installViewportServiceForDoc(this.ampdoc);
+    this.viewport_ = viewportForDoc(this.ampdoc);
 
     /** @private @const {!./vsync-impl.Vsync} */
     this.vsync_ = installVsyncService(this.win);
@@ -310,6 +310,16 @@ export class Resources {
   }
 
   /**
+   * Returns the {@link Resource} instance corresponding to the specified AMP
+   * Element. Returns null if no resource is found.
+   * @param {!AmpElement} element
+   * @return {?Resource}
+   */
+  getResourceForElementOptional(element) {
+    return Resource.forElementOptional(element);
+  }
+
+  /**
    * Returns the viewport instance
    * @return {!./viewport-impl.Viewport}
    */
@@ -342,9 +352,6 @@ export class Resources {
 
     // Create and add the resource.
     const resource = new Resource((++this.resourceIdCounter_), element, this);
-    if (!element.id) {
-      element.id = 'AMP_' + resource.getId();
-    }
     this.resources_.push(resource);
     this.buildOrScheduleBuildForResource_(resource);
     dev().fine(TAG_, 'element added:', resource.debugid);
@@ -441,14 +448,18 @@ export class Resources {
 
   /**
    * @param {!Resource} resource
+   * @param {boolean=} opt_disconnect
    * @private
    */
-  removeResource_(resource) {
+  removeResource_(resource, opt_disconnect) {
     const index = this.resources_.indexOf(resource);
     if (index != -1) {
       this.resources_.splice(index, 1);
     }
     resource.pauseOnRemove();
+    if (opt_disconnect) {
+      resource.disconnect();
+    }
     this.cleanupTasks_(resource, /* opt_removePending */ true);
     dev().fine(TAG_, 'element removed:', resource.debugid);
   }
@@ -459,7 +470,7 @@ export class Resources {
    */
   removeForChildWindow(childWin) {
     const toRemove = this.resources_.filter(r => r.hostWin == childWin);
-    toRemove.forEach(r => this.removeResource_(r));
+    toRemove.forEach(r => this.removeResource_(r, /* disconnect */ true));
   }
 
   /**
@@ -615,8 +626,8 @@ export class Resources {
   attemptChangeSize(element, newHeight, newWidth) {
     return new Promise((resolve, reject) => {
       this.scheduleChangeSize_(Resource.forElement(element), newHeight,
-        newWidth, /* force */ false, hasSizeChanged => {
-          if (hasSizeChanged) {
+        newWidth, /* force */ false, success => {
+          if (success) {
             resolve();
           } else {
             reject(new Error('changeSize attempt denied'));
@@ -1332,7 +1343,7 @@ export class Resources {
       }
       // Nothing to do.
       if (opt_callback) {
-        opt_callback(/* hasSizeChanged */false);
+        opt_callback(/* success */ true);
       }
       return;
     }

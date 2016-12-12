@@ -14,13 +14,19 @@
  * limitations under the License.
  */
 
+import {Observable} from './observable';
+import {dev, rethrowAsync} from './log';
+import {disposeServicesForEmbed, getTopWindow} from './service';
 import {escapeHtml} from './dom';
 import {extensionsFor} from './extensions';
-import {getTopWindow} from './service';
 import {isDocumentReady} from './document-ready';
 import {loadPromise} from './event-helper';
 import {resourcesForDoc} from './resources';
-import {rethrowAsync} from './log';
+import {setStyle, setStyles} from './style';
+
+
+/** @const {string} */
+const EMBED_PROP = '__AMP_EMBED__';
 
 
 /**
@@ -69,6 +75,30 @@ function isSrcdocSupported() {
 
 
 /**
+ * Sets whether the embed is currently visible. The interpretation of visibility
+ * is up to the embed parent. However, most of typical cases would rely on
+ * whether the embed is currently in the viewport.
+ * @param {!FriendlyIframeEmbed} embed
+ * @param {boolean} visible
+ * @restricted
+ * TODO(dvoytenko): Re-evaluate and probably drop once layers are ready.
+ */
+export function setFriendlyIframeEmbedVisible(embed, visible) {
+  embed.setVisible_(visible);
+}
+
+
+/**
+ * Returns the embed created using `installFriendlyIframeEmbed` or `null`.
+ * @param {!HTMLIFrameElement} iframe
+ * @return {?FriendlyIframeEmbed}
+ */
+export function getFriendlyIframeEmbedOptional(iframe) {
+  return /** @type {?FriendlyIframeEmbed} */ (iframe[EMBED_PROP]);
+}
+
+
+/**
  * Creates the requested "friendly iframe" embed. Returns the promise that
  * will be resolved as soon as the embed is available. The actual
  * initialization of the embed will start as soon as the `iframe` is added
@@ -76,15 +106,17 @@ function isSrcdocSupported() {
  * @param {!HTMLIFrameElement} iframe
  * @param {!Element} container
  * @param {!FriendlyIframeSpec} spec
- * @return {!Promise<FriendlyIframeEmbed>}
+ * @param {function(!Window)=} opt_preinstallCallback
+ * @return {!Promise<!FriendlyIframeEmbed>}
  */
-export function installFriendlyIframeEmbed(iframe, container, spec) {
+export function installFriendlyIframeEmbed(iframe, container, spec,
+    opt_preinstallCallback) {
   /** @const {!Window} */
   const win = getTopWindow(iframe.ownerDocument.defaultView);
   /** @const {!./service/extensions-impl.Extensions} */
   const extensions = extensionsFor(win);
 
-  iframe.style.visibility = 'hidden';
+  setStyle(iframe, 'visibility', 'hidden');
   iframe.setAttribute('referrerpolicy', 'unsafe-url');
 
   // Pre-load extensions.
@@ -148,12 +180,23 @@ export function installFriendlyIframeEmbed(iframe, container, spec) {
   }
 
   return readyPromise.then(() => {
+    const embed = new FriendlyIframeEmbed(iframe, spec, loadedPromise);
+    iframe[EMBED_PROP] = embed;
+
+    const childWin = /** @type {!Window} */ (iframe.contentWindow);
     // Add extensions.
     extensions.installExtensionsInChildWindow(
-        /** @type {!Window} */(iframe.contentWindow), spec.extensionIds || []);
+        childWin, spec.extensionIds || [], opt_preinstallCallback);
     // Ready to be shown.
-    iframe.style.visibility = '';
-    return new FriendlyIframeEmbed(iframe, spec, loadedPromise);
+    setStyle(iframe, 'visibility', '');
+    if (childWin.document && childWin.document.body) {
+      setStyles(dev().assertElement(childWin.document.body), {
+        opacity: 1,
+        visibility: 'visible',
+        animation: 'none',
+      });
+    }
+    return embed;
   });
 }
 
@@ -268,6 +311,24 @@ export class FriendlyIframeEmbed {
 
     /** @private @const {!Promise} */
     this.loadedPromise_ = loadedPromise;
+
+    /**
+     * Starts out as invisible. The interpretation of this flag is up to
+     * the emded parent.
+     * @private {boolean}
+     */
+    this.visible_ = false;
+
+    /** @private {!Observable<boolean>} */
+    this.visibilityObservable_ = new Observable();
+  }
+
+  /**
+   * Ensures that all resources from this iframe have been released.
+   */
+  destroy() {
+    resourcesForDoc(this.iframe).removeForChildWindow(this.win);
+    disposeServicesForEmbed(this.win);
   }
 
   /**
@@ -280,9 +341,33 @@ export class FriendlyIframeEmbed {
   }
 
   /**
-   * Ensures that all resources from this iframe have been released.
+   * Whether the embed is currently visible. The interpretation of visibility
+   * is up to the embed parent. However, most of typical cases would rely on
+   * whether the embed is currently in the viewport.
+   * @return {boolean}
+   * TODO(dvoytenko): Re-evaluate and probably drop once layers are ready.
    */
-  destroy() {
-    resourcesForDoc(this.iframe).removeForChildWindow(this.win);
+  isVisible() {
+    return this.visible_;
+  }
+
+  /**
+   * See `isVisible` for more info.
+   * @param {function(boolean)} handler
+   * @return {!UnlistenDef}
+   */
+  onVisibilityChanged(handler) {
+    return this.visibilityObservable_.add(handler);
+  }
+
+  /**
+   * @param {boolean} visible
+   * @private
+   */
+  setVisible_(visible) {
+    if (this.visible_ != visible) {
+      this.visible_ = visible;
+      this.visibilityObservable_.fire(this.visible_);
+    }
   }
 }

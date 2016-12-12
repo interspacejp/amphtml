@@ -16,7 +16,8 @@
 
 import {AmpAdXOriginIframeHandler} from './amp-ad-xorigin-iframe-handler';
 import {
-  allowRenderOutsideViewport,
+  is3pThrottled,
+  getAmpAdRenderOutsideViewport,
   incrementLoadingAds,
 } from './concurrent-load';
 import {getAdCid} from '../../../src/ad-cid';
@@ -26,19 +27,25 @@ import {isAdPositionAllowed, getAdContainer,}
     from '../../../src/ad-helper';
 import {adConfig} from '../../../ads/_config';
 import {getLifecycleReporter} from '../../../ads/google/a4a/performance';
-import {user} from '../../../src/log';
+import {user, dev} from '../../../src/log';
 import {getIframe} from '../../../src/3p-frame';
 import {setupA2AListener} from './a2a-listener';
 import {moveLayoutRect} from '../../../src/layout-rect';
 import {AdDisplayState, AmpAdUIHandler} from './amp-ad-ui';
 
-
 /** @const {!string} Tag name for 3P AD implementation. */
 export const TAG_3P_IMPL = 'amp-ad-3p-impl';
 
+/**
+ * NOTE: For testing purpose of 3p ad, please consider using ad type `_ping_`,
+ * as it disables native IntersectionObserver and sends renderStart signal.
+ */
+
 export class AmpAd3PImpl extends AMP.BaseElement {
 
-  /** @param {!AmpElement} element */
+  /**
+   * @param {!AmpElement} element
+   */
   constructor(element) {
     super(element);
 
@@ -84,8 +91,9 @@ export class AmpAd3PImpl extends AMP.BaseElement {
     /** @private {?Promise} */
     this.layoutPromise_ = null;
 
-    /** {!../../../ads/google/a4a/performance.AmpAdLifecycleReporter|!../../../ads/google/a4a/performance.NullLifecycleReporter} */
-    this.lifecycleReporter = getLifecycleReporter(this, 'amp');
+    /** {!../../../ads/google/a4a/performance.BaseLifecycleReporter} */
+    this.lifecycleReporter = getLifecycleReporter(this, 'amp', undefined,
+        this.element.getAttribute('data-amp-slot-index'));
 
     this.lifecycleReporter.sendPing('adSlotBuilt');
   }
@@ -97,12 +105,13 @@ export class AmpAd3PImpl extends AMP.BaseElement {
   }
 
   renderOutsideViewport() {
-    const allowRender = allowRenderOutsideViewport(this.element, this.win);
-    if (allowRender !== true) {
-      return allowRender;
+    if (is3pThrottled(this.win)) {
+      return false;
     }
     // Otherwise the ad is good to go.
-    return super.renderOutsideViewport();
+    const elementCheck = getAmpAdRenderOutsideViewport(this.element);
+    return elementCheck !== null ?
+      elementCheck : super.renderOutsideViewport();
   }
 
   /** @override */
@@ -182,6 +191,9 @@ export class AmpAd3PImpl extends AMP.BaseElement {
       const iframeBox =
           this.getViewport().getLayoutRect(this.xOriginIframeHandler_.iframe);
       const box = this.getLayoutBox();
+      // Cache the iframe's relative position to the amp-ad. This is
+      // necessary for fixed-position containers which "move" with the
+      // viewport.
       this.iframeLayoutBox_ = moveLayoutRect(iframeBox, -box.left, -box.top);
     }
   }
@@ -197,9 +209,10 @@ export class AmpAd3PImpl extends AMP.BaseElement {
     if (!this.iframeLayoutBox_) {
       this.measureIframeLayoutBox_();
     }
-    // If the iframe is full size, we avoid an object allocation by moving box.
-    return moveLayoutRect(box, this.iframeLayoutBox_.left,
-        this.iframeLayoutBox_.top);
+
+    const iframe = /** @type {!../../../src/layout-rect.LayoutRectDef} */(
+        dev().assert(this.iframeLayoutBox_));
+    return moveLayoutRect(iframe, box.left, box.top);
   }
 
   /** @override */
@@ -218,6 +231,7 @@ export class AmpAd3PImpl extends AMP.BaseElement {
         clientId: cid || null,
         container: this.container_,
       };
+
       // In this path, the request and render start events are entangled,
       // because both happen inside a cross-domain iframe.  Separating them
       // here, though, allows us to measure the impact of ad throttling via
@@ -227,7 +241,7 @@ export class AmpAd3PImpl extends AMP.BaseElement {
           this.element, undefined, opt_context);
       this.xOriginIframeHandler_ = new AmpAdXOriginIframeHandler(
           this);
-      return this.xOriginIframeHandler_.init(iframe, true);
+      return this.xOriginIframeHandler_.init(iframe);
     });
   }
 

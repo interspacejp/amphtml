@@ -15,11 +15,11 @@
  */
 
 import {dev, user} from '../log';
-import {fromClassForDoc} from '../service';
+import {fromClassForDoc, installServiceInEmbedScope} from '../service';
 import {getMode} from '../mode';
+import {isArray, map} from '../types';
 import {timerFor} from '../timer';
 import {vsyncFor} from '../vsync';
-import {isArray} from '../types';
 
 /** @const {string} */
 const TAG_ = 'Action';
@@ -33,6 +33,10 @@ const ACTION_QUEUE_ = '__AMP_ACTION_QUEUE__';
 /** @const {string} */
 const DEFAULT_METHOD_ = 'activate';
 
+/** @const {!Object<string,!Array<string>>} */
+const ELEMENTS_ACTIONS_MAP_ = {
+  'form': ['submit'],
+};
 
 /**
  * @typedef {{
@@ -76,25 +80,29 @@ export class ActionInvocation {
 }
 
 
-
 /**
  * TODO(dvoytenko): consider splitting this class into two:
  * 1. A class that has a method "trigger(element, eventType, data)" and
  *    simply can search target in DOM and trigger methods on it.
  * 2. A class that configures event recognizers and rules and then
  *    simply calls action.trigger.
+ * @implements {../service.EmbeddableService}
  */
 export class ActionService {
 
   /**
    * @param {!./ampdoc-impl.AmpDoc} ampdoc
+   * @param {(!Document|!ShadowRoot)=} opt_root
    */
-  constructor(ampdoc) {
+  constructor(ampdoc, opt_root) {
     /** @const {!./ampdoc-impl.AmpDoc} */
     this.ampdoc = ampdoc;
 
+    /** @const {!Document|!ShadowRoot} */
+    this.root_ = opt_root || ampdoc.getRootNode();
+
     /** @const @private {!Object<string, function(!ActionInvocation)>} */
-    this.globalMethodHandlers_ = {};
+    this.globalMethodHandlers_ = map();
 
     /** @private {!./vsync-impl.Vsync} */
     this.vsync_ = vsyncFor(ampdoc.win);
@@ -102,6 +110,14 @@ export class ActionService {
     // Add core events.
     this.addEvent('tap');
     this.addEvent('submit');
+    // TODO(mkhatib, #5702): Consider a debounced-input event for text-type inputs.
+    this.addEvent('change');
+  }
+
+  /** @override */
+  adoptEmbedWindow(embedWin) {
+    installServiceInEmbedScope(embedWin, 'action',
+        new ActionService(this.ampdoc, embedWin.document));
   }
 
   /**
@@ -113,14 +129,14 @@ export class ActionService {
     if (name == 'tap') {
       // TODO(dvoytenko): if needed, also configure touch-based tap, e.g. for
       // fast-click.
-      this.ampdoc.getRootNode().addEventListener('click', event => {
+      this.root_.addEventListener('click', event => {
         if (!event.defaultPrevented) {
           this.trigger(dev().assertElement(event.target), 'tap', event);
         }
       });
-    } else if (name == 'submit') {
-      this.ampdoc.getRootNode().addEventListener('submit', event => {
-        this.trigger(dev().assertElement(event.target), 'submit', event);
+    } else if (name == 'submit' || name == 'change') {
+      this.root_.addEventListener(name, event => {
+        this.trigger(dev().assertElement(event.target), name, event);
       });
     }
   }
@@ -163,8 +179,9 @@ export class ActionService {
    */
   installActionHandler(target, handler) {
     const debugid = target.tagName + '#' + target.id;
-    user().assert(target.id && target.id.substring(0, 4) == 'amp-',
-        'AMP element is expected: %s', debugid);
+    dev().assert((target.id && target.id.substring(0, 4) == 'amp-') ||
+        target.tagName.toLowerCase() in ELEMENTS_ACTIONS_MAP_,
+        'AMP element or a whitelisted target element is expected: %s', debugid);
 
     /** @const {!Array<!ActionInvocation>} */
     const currentQueue = target[ACTION_QUEUE_];
@@ -207,7 +224,7 @@ export class ActionService {
       return;
     }
 
-    const target = this.ampdoc.getElementById(action.actionInfo.target);
+    const target = this.root_.getElementById(action.actionInfo.target);
     if (!target) {
       this.actionInfoError_('target not found', action.actionInfo, target);
       return;
@@ -249,21 +266,24 @@ export class ActionService {
       return;
     }
 
+    const lowerTagName = target.tagName.toLowerCase();
     // AMP elements.
-    if (target.tagName.toLowerCase().substring(0, 4) == 'amp-') {
+    if (lowerTagName.substring(0, 4) == 'amp-') {
       if (target.enqueAction) {
         target.enqueAction(invocation);
       } else {
         this.actionInfoError_('Unrecognized AMP element "' +
-            target.tagName.toLowerCase() + '". ' +
+            lowerTagName + '". ' +
             'Did you forget to include it via <script custom-element>?',
             actionInfo, target);
       }
       return;
     }
 
-    // Special elements with AMP ID.
-    if (target.id && target.id.substring(0, 4) == 'amp-') {
+    // Special elements with AMP ID or known supported actions.
+    const supportedActions = ELEMENTS_ACTIONS_MAP_[lowerTagName];
+    if ((target.id && target.id.substring(0, 4) == 'amp-') ||
+        (supportedActions && supportedActions.indexOf(method) != -1)) {
       if (!target[ACTION_QUEUE_]) {
         target[ACTION_QUEUE_] = [];
       }
@@ -273,7 +293,7 @@ export class ActionService {
 
     // Unsupported target.
     this.actionInfoError_(
-        'Target must be an AMP element or have an AMP ID',
+        'Target element does not support provided action',
         actionInfo, target);
   }
 
@@ -385,7 +405,7 @@ export function parseActionMap(s, context) {
                   assertToken(toks.next(/* convertValue */ true),
                       TokenType.LITERAL).value;
               if (!args) {
-                args = Object.create(null);
+                args = map();
               }
               args[argKey] = argValue;
               peek = toks.peek();
@@ -410,7 +430,7 @@ export function parseActionMap(s, context) {
         str: s,
       };
       if (!actionMap) {
-        actionMap = {};
+        actionMap = map();
       }
       actionMap[action.event] = action;
     } else {
@@ -615,4 +635,4 @@ function isNum(c) {
  */
 export function installActionServiceForDoc(ampdoc) {
   return fromClassForDoc(ampdoc, 'action', ActionService);
-};
+}

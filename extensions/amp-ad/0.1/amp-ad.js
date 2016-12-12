@@ -13,12 +13,15 @@
  * limitations under the License.
  */
 
+import {CSS} from '../../../build/amp-ad-0.1.css';
 import {isLayoutSizeDefined} from '../../../src/layout';
 import {AmpAd3PImpl} from './amp-ad-3p-impl';
+import {AmpAdCustom} from './amp-ad-custom';
 import {a4aRegistry} from '../../../ads/_a4a-config';
 import {dev, user} from '../../../src/log';
 import {extensionsFor} from '../../../src/extensions';
 import {userNotificationManagerFor} from '../../../src/user-notification';
+import {isExperimentOn} from '../../../src/experiments';
 
 
 /**
@@ -52,6 +55,13 @@ export class AmpAd extends AMP.BaseElement {
         // Unspecified or empty type.  Nothing to do here except bail out.
         return null;
       }
+      // Check for the custom ad type (no ad network, self-service)
+      if (type === 'custom' && isExperimentOn(this.win, 'ad-type-custom')) {
+        return new AmpAdCustom(this.element);
+      }
+      window.ampAdSlotIdCounter = window.ampAdSlotIdCounter || 0;
+      const slotId = window.ampAdSlotIdCounter++;
+      this.element.setAttribute('data-amp-slot-index', slotId);
       // TODO(tdrl): Check amp-ad registry to see if they have this already.
       if (!a4aRegistry[type] ||
           !a4aRegistry[type](this.win, this.element)) {
@@ -88,5 +98,5 @@ export class AmpAd extends AMP.BaseElement {
   }
 }
 
-AMP.registerElement('amp-ad', AmpAd);
-AMP.registerElement('amp-embed', AmpAd);
+AMP.registerElement('amp-ad', AmpAd, CSS);
+AMP.registerElement('amp-embed', AmpAd, CSS);
